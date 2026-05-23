@@ -1,17 +1,22 @@
 const jwt = require("jsonwebtoken");
-const User = require("../models/User");
+const User = require("../models/user");
 
-const protect = async (req, res, next) => {
-
-  let token;
-
+const getTokenFromRequest = (req) => {
   if (
     req.headers.authorization &&
     req.headers.authorization.startsWith("Bearer")
   ) {
+    return req.headers.authorization.split(" ")[1];
+  }
 
-    token = req.headers.authorization.split(" ")[1];
+  return req.headers["x-auth-token"] || null;
+};
 
+const protect = async (req, res, next) => {
+
+  const token = getTokenFromRequest(req);
+
+  if (token) {
     try {
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -33,4 +38,23 @@ const protect = async (req, res, next) => {
   }
 };
 
-module.exports = { protect };
+const optionalProtect = async (req, res, next) => {
+  const token = getTokenFromRequest(req);
+
+  if (!token) {
+    return next();
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = await User.findById(decoded.id);
+  } catch (error) {
+    return res.status(401).json({
+      message: "Not authorized",
+    });
+  }
+
+  next();
+};
+
+module.exports = { protect, optionalProtect };

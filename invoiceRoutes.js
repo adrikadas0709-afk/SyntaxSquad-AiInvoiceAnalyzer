@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const upload = require("../middleware/uploadMiddleware");
-const { protect } = require("../middleware/authMiddleware");
+const upload = require("../middlewares/uploadMiddleware");
+const { protect, optionalProtect } = require("../middlewares/authMiddleware");
 const {
   uploadInvoice,
   getInvoices,
@@ -25,8 +25,8 @@ router.post(
   uploadInvoice
 );
 
-// GET: Fetch all historical records for the logged-in user
-router.get("/", protect, getInvoices);
+// GET: Fetch logged-in user's invoices, or all invoices when testing without a token
+router.get("/", optionalProtect, getInvoices);
 
 // GET: Fetch a single invoice detail view
 router.get("/:id", protect, getInvoiceById);

@@ -1,12 +1,13 @@
 const mongoose = require("mongoose");
 
-const itemSchema = new mangoose.Schema({
+const itemSchema = new mongoose.Schema({
     name:{type:String, required:true},
-    quantity:{type:Number, required:true},
-    unitPrice:{type:Number, required:true},
+    quantity:{type:Number, default:1},
+    unitPrice:{type:Number, default:0},
+    price:{type:Number, default:0},
     taxPercent: {type:Number,default:0},
-    total:{type:Number, required:true},
-})
+    total:{type:Number, default:0},
+});
 
 const invoiceSchema = new mongoose.Schema(
 {
@@ -16,26 +17,45 @@ const invoiceSchema = new mongoose.Schema(
     required:true,
   },
 
-  merchant: String,
+  merchant: {
+    type: String
+  },
 
-  amount: Number,
+  amount: {
 
-  tax: Number,
+    type: Number
+  },
 
-  date: String,
+  currency: {
+    type: String,
+    default: "INR"
+  },
 
-  category: String,
+  currencySymbol: {
+    type: String,
+    default: "₹"
+  },
 
-  items: [
-    {
-      name: String,
-      price: Number
-    }
-  ],
+  tax: {
+    type : Number
+},
+  date: {
+    type :String
+  },
 
-  aiInsight: String,
+  category: {
+  type :String,
+  },
 
-  fileUrl: String
+  items: [itemSchema],
+
+  aiInsight: {
+    type:String
+  },
+
+  fileUrl: {
+    type:String
+  }
 
 }, {
   timestamps: true
