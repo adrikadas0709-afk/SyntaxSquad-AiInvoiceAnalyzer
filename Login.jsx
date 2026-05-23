@@ -3,9 +3,12 @@ import { useState } from "react";
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
 } from "firebase/auth";
 
 import { auth } from "../firebase";
+
+import { useNavigate } from "react-router-dom";
 
 export default function Login() {
 
@@ -19,6 +22,47 @@ export default function Login() {
 
   const [isSignup, setIsSignup] = useState(false);
 
+  const navigate = useNavigate();
+
+  // PASSWORD VALIDATION
+
+  const validatePassword = (password) => {
+
+    const strongPassword =
+      /^(?=.*[a-z])(?=.*[A-Z])(?=.*[\W_]).{6,}$/;
+
+    return strongPassword.test(password);
+  };
+
+  // RESET PASSWORD
+
+  const handleResetPassword = async () => {
+
+    setError("");
+
+    setMessage("");
+
+    if (!email) {
+
+      setError("Enter your email first");
+
+      return;
+    }
+
+    try {
+
+      await sendPasswordResetEmail(auth, email);
+
+      setMessage("Password reset email sent");
+
+    } catch (err) {
+
+      setError("Unable to send reset email");
+    }
+  };
+
+  // LOGIN / SIGNUP
+
   const handleAuth = async (e) => {
 
     e.preventDefault();
@@ -29,7 +73,18 @@ export default function Login() {
 
     try {
 
+      // SIGNUP
+
       if (isSignup) {
+
+        if (!validatePassword(password)) {
+
+          setError(
+            "Password must contain uppercase, lowercase, special character and minimum 6 characters"
+          );
+
+          return;
+        }
 
         await createUserWithEmailAndPassword(
           auth,
@@ -39,7 +94,15 @@ export default function Login() {
 
         setMessage("Account Created Successfully");
 
-      } else {
+        setTimeout(() => {
+          navigate("/dashboard");
+        }, 1000);
+
+      }
+
+      // LOGIN
+
+      else {
 
         await signInWithEmailAndPassword(
           auth,
@@ -48,6 +111,10 @@ export default function Login() {
         );
 
         setMessage("Login Successful");
+
+        setTimeout(() => {
+          navigate("/dashboard");
+        }, 1000);
       }
 
     } catch (err) {
@@ -79,7 +146,9 @@ export default function Login() {
         err.code === "auth/weak-password"
       ) {
 
-        setError("Password should be at least 6 characters");
+        setError(
+          "Password should be stronger"
+        );
 
       }
 
@@ -92,13 +161,13 @@ export default function Login() {
 
   return (
 
-    <div className="min-h-screen flex items-center justify-center bg-slate-900">
+    <div className="min-h-screen flex items-center justify-center bg-[#0f172a]">
 
-      <div className="bg-slate-800 p-8 rounded-2xl w-96 shadow-2xl">
+      <div className="bg-[#1e293b] p-8 rounded-2xl w-[340px] shadow-xl border border-cyan-500/20">
 
-        <h1 className="text-3xl font-bold text-white text-center mb-6">
+        <h1 className="text-3xl font-bold text-cyan-400 text-center mb-5">
 
-          {isSignup ? "Sign Up" : "Login"}
+          {isSignup ? "Create Account" : "Welcome Back"}
 
         </h1>
 
@@ -107,62 +176,110 @@ export default function Login() {
           className="space-y-4"
         >
 
-          <input
-            type="email"
-            placeholder="Enter Email"
-            value={email}
-            onChange={(e) =>
-              setEmail(e.target.value)
-            }
-            className="w-full p-3 rounded-lg outline-none"
-            required
-          />
+          {/* EMAIL */}
 
-          <input
-            type="password"
-            placeholder="Enter Password"
-            value={password}
-            onChange={(e) =>
-              setPassword(e.target.value)
-            }
-            className="w-full p-3 rounded-lg outline-none"
-            required
-          />
+          <div>
+
+            <label className="block text-white text-lg mb-2 font-semibold">
+
+              Email Address
+
+            </label>
+
+            <input
+              type="email"
+              placeholder="Enter your email"
+              value={email}
+              onChange={(e) =>
+                setEmail(e.target.value)
+              }
+              className="w-full p-3 rounded-xl bg-slate-900 text-white border border-cyan-400 outline-none focus:ring-2 focus:ring-cyan-400"
+              required
+            />
+
+          </div>
+
+          {/* PASSWORD */}
+
+          <div>
+
+            <label className="block text-white text-lg mb-2 font-semibold">
+
+              Password
+
+            </label>
+
+            <input
+              type="password"
+              placeholder="Enter your password"
+              value={password}
+              onChange={(e) =>
+                setPassword(e.target.value)
+              }
+              className="w-full p-3 rounded-xl bg-slate-900 text-white border border-cyan-400 outline-none focus:ring-2 focus:ring-cyan-400"
+              required
+            />
+
+          </div>
+
+          {/* ERROR */}
 
           {error && (
 
-            <div className="bg-red-500/20 text-red-400 p-3 rounded-lg">
+            <div className="bg-red-500/20 text-red-300 p-3 rounded-xl text-center text-sm">
 
               {error}
 
             </div>
           )}
 
+          {/* SUCCESS */}
+
           {message && (
 
-            <div className="bg-green-500/20 text-green-400 p-3 rounded-lg">
+            <div className="bg-green-500/20 text-green-300 p-3 rounded-xl text-center text-sm">
 
               {message}
 
             </div>
           )}
 
+          {/* LOGIN BUTTON */}
+
           <button
             type="submit"
-            className="w-full bg-cyan-500 hover:bg-cyan-600 transition p-3 rounded-lg font-bold text-white"
+            className="w-full bg-cyan-500 hover:bg-cyan-600 transition-all duration-300 p-3 rounded-xl font-bold text-lg text-black shadow-lg"
           >
 
             {isSignup ? "Sign Up" : "Login"}
 
           </button>
 
+          {/* RESET PASSWORD */}
+
+          {!isSignup && (
+
+            <button
+              type="button"
+              onClick={handleResetPassword}
+              className="text-cyan-300 hover:text-cyan-200 w-full text-sm mt-2"
+            >
+
+              Forgot Password?
+
+            </button>
+
+          )}
+
         </form>
+
+        {/* SWITCH LOGIN/SIGNUP */}
 
         <button
           onClick={() =>
             setIsSignup(!isSignup)
           }
-          className="text-cyan-400 mt-5 w-full"
+          className="text-cyan-300 hover:text-cyan-200 mt-5 w-full text-center text-sm"
         >
 
           {isSignup
