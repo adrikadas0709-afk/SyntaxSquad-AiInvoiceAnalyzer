@@ -3,24 +3,60 @@ const mongoose = require("mongoose");
 const Invoice = require("../models/invoice");
 const { GoogleGenAI } = require("@google/genai");
 const jsonDb = require("../utils/jsonDb");
+const {
+  buildInvoiceSummary,
+  calculateInvoiceBasics,
+  normalizeItems: normalizeInvoiceItems,
+  parseMoney: parseMoneyValue,
+} = require("../utils/financeAnalytics");
 
 const getGeminiApiKey = () => {
   const key = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
   return key.trim().replace(/^['"]|['"]$/g, "");
 };
 
-const parseMoney = (value) => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-
-  if (typeof value !== "string") {
-    return 0;
-  }
-
-  const normalized = value.replace(/,/g, "").match(/-?\d+(\.\d+)?/);
-  return normalized ? Number(normalized[0]) : 0;
+const isAiQuotaError = (error) => {
+  const message = String(error?.message || "");
+  return (
+    error?.status === 429 ||
+    message.includes("429") ||
+    message.includes("RESOURCE_EXHAUSTED") ||
+    message.toLowerCase().includes("quota")
+  );
 };
+
+const buildAiUnavailableData = (file) => {
+  const originalName = file?.originalname || "Uploaded invoice";
+  const fallback = {
+    invoice_number: null,
+    invoice_date: null,
+    customer_name: null,
+    seller_name: originalName.replace(/\.[^.]+$/, ""),
+    total_amount: 0,
+    subtotal: 0,
+    tax: 0,
+    discount: 0,
+    shipping: 0,
+    item_count: 0,
+    average_item_amount: 0,
+    tax_rate_percent: 0,
+    highest_item: { name: "None", total: 0 },
+    category: "Other",
+    items: [],
+    finance_analysis: {
+      category: "Other",
+      decision: "CAUTION",
+      reason: "AI quota is currently exhausted, so this invoice could not be read automatically.",
+      past_transactions: 0,
+      total_spent_in_category: 0,
+      total_amount_numeric: 0,
+    },
+  };
+
+  return fallback;
+};
+
+const parseMoney = parseMoneyValue;
 
 const extractJsonObject = (text) => {
   const cleaned = text.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
@@ -60,30 +96,7 @@ const normalizeCurrency = (parsedData) => {
   };
 };
 
-const normalizeItems = (items = []) => {
-  if (!Array.isArray(items)) {
-    return [];
-  }
-
-  return items.map((item) => {
-    const quantity = parseMoney(item.quantity) || 1;
-    const unitPrice =
-      parseMoney(item.unitPrice) ||
-      parseMoney(item.rate) ||
-      parseMoney(item.price) ||
-      parseMoney(item.total);
-    const total = parseMoney(item.total) || Number((quantity * unitPrice).toFixed(2));
-
-    return {
-      name: item.name || item.description || "Invoice item",
-      quantity,
-      unitPrice,
-      price: unitPrice,
-      taxPercent: parseMoney(item.taxPercent),
-      total,
-    };
-  });
-};
+const normalizeItems = normalizeInvoiceItems;
 
 const uploadInvoice = async (req, res) => {
   try {
@@ -168,9 +181,15 @@ const uploadInvoice = async (req, res) => {
     const rawText = response.text.trim();
     const parsedData = extractJsonObject(rawText);
     const items = normalizeItems(parsedData.items);
-    const subtotalFromItems = items.reduce((sum, item) => sum + item.total, 0);
-    const tax = parseMoney(parsedData.tax);
-    const amount = parseMoney(parsedData.amount) || Number((subtotalFromItems + tax).toFixed(2));
+    const basics = calculateInvoiceBasics({
+      amount: parsedData.amount,
+      tax: parsedData.tax,
+      discount: parsedData.discount,
+      shipping: parsedData.shipping,
+      items,
+    });
+    const tax = basics.tax;
+    const amount = basics.amount;
     const { currency, currencySymbol } = normalizeCurrency(parsedData);
 
     // 6. Persist the record in MongoDB Atlas or fallback to local JSON database
@@ -215,14 +234,77 @@ const uploadInvoice = async (req, res) => {
     res.status(201).json({
       success: true,
       message: "Invoice successfully analyzed by AI",
-      invoice
+      invoice,
+      calculations: {
+        subtotal: basics.subtotal,
+        tax: basics.tax,
+        discount: basics.discount,
+        shipping: basics.shipping,
+        itemCount: basics.itemCount,
+        averageItemAmount: basics.averageItemAmount,
+        taxRatePercent: basics.taxRatePercent,
+        highestItem: basics.highestItem,
+      },
     });
 
   } catch (error) {
     console.error("Generalized Processor Error Log:", error);
+
+    if (isAiQuotaError(error)) {
+      const fallbackData = buildAiUnavailableData(req.file);
+      let invoice;
+
+      if (req.user?._id) {
+        if (mongoose.connection.readyState === 1 && mongoose.connection.db) {
+          invoice = await Invoice.create({
+            user: req.user._id,
+            merchant: fallbackData.seller_name || "Unknown Merchant",
+            amount: 0,
+            currency: "INR",
+            currencySymbol: "₹",
+            tax: 0,
+            date: "Unknown Date",
+            category: "Other",
+            items: [],
+            aiInsight: fallbackData.finance_analysis.reason,
+            fileUrl: req.file?.path,
+          });
+        } else {
+          const invoices = jsonDb.getLocalInvoices();
+          invoice = {
+            _id: `offline_invoice_${Date.now()}`,
+            user: req.user._id,
+            merchant: fallbackData.seller_name || "Unknown Merchant",
+            amount: 0,
+            currency: "INR",
+            currencySymbol: "₹",
+            tax: 0,
+            date: "Unknown Date",
+            category: "Other",
+            items: [],
+            aiInsight: fallbackData.finance_analysis.reason,
+            fileUrl: req.file?.path,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          invoices.unshift(invoice);
+          jsonDb.saveLocalInvoices(invoices);
+        }
+      }
+
+      return res.status(201).json({
+        success: true,
+        aiAvailable: false,
+        message: "AI quota limit reached. The invoice file was saved, but automatic extraction is unavailable right now.",
+        invoice,
+        calculations: calculateInvoiceBasics(fallbackData),
+        data: fallbackData,
+      });
+    }
+
     res.status(500).json({
       message: "Invoice processing failed",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -247,6 +329,7 @@ const getInvoices = async (req, res) => {
       authRequired: false,
       scope: req.user?._id ? "current-user" : "all-invoices",
       invoices,
+      calculations: buildInvoiceSummary(invoices, req.query.currency || "INR"),
     });
   } catch (error) {
     res.status(500).json({ message: "Unable to fetch invoices", error: error.message });
@@ -267,7 +350,7 @@ const getInvoiceById = async (req, res) => {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
-    res.json({ success: true, invoice });
+    res.json({ success: true, invoice, calculations: calculateInvoiceBasics(invoice) });
   } catch (error) {
     res.status(500).json({ message: "Unable to fetch invoice", error: error.message });
   }
@@ -309,6 +392,49 @@ const deleteInvoice = async (req, res) => {
   }
 };
 
+const clearInvoiceHistory = async (req, res) => {
+  try {
+    let deletedCount = 0;
+
+    if (mongoose.connection.readyState === 1 && mongoose.connection.db) {
+      const invoices = await Invoice.find({ user: req.user._id });
+      deletedCount = invoices.length;
+
+      invoices.forEach((invoice) => {
+        if (invoice.fileUrl && fs.existsSync(invoice.fileUrl)) {
+          fs.unlinkSync(invoice.fileUrl);
+        }
+      });
+
+      await Invoice.deleteMany({ user: req.user._id });
+    } else {
+      const invoices = jsonDb.getLocalInvoices();
+      const remainingInvoices = [];
+
+      invoices.forEach((invoice) => {
+        if (invoice.user === req.user._id) {
+          deletedCount += 1;
+          if (invoice.fileUrl && fs.existsSync(invoice.fileUrl)) {
+            fs.unlinkSync(invoice.fileUrl);
+          }
+        } else {
+          remainingInvoices.push(invoice);
+        }
+      });
+
+      jsonDb.saveLocalInvoices(remainingInvoices);
+    }
+
+    res.json({
+      success: true,
+      message: "Invoice history cleared",
+      deletedCount,
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Unable to clear invoice history", error: error.message });
+  }
+};
+
 const extractInvoiceDataOnly = async (req, res) => {
   try {
     const apiKey = getGeminiApiKey();
@@ -342,7 +468,13 @@ const extractInvoiceDataOnly = async (req, res) => {
         "customer_name": "string or null",
         "seller_name": "string or null",
         "total_amount": 0,
+        "tax": 0,
+        "discount": 0,
+        "shipping": 0,
         "category": "Food, Travel, Shopping, Bills, Entertainment, Office Supplies, or Other",
+        "items": [
+          { "name": "Item name", "quantity": 1, "unitPrice": 0, "total": 0 }
+        ],
         "finance_analysis": {
           "decision": "BUY, CAUTION, or AVOID",
           "reason": "short reason"
@@ -355,12 +487,42 @@ const extractInvoiceDataOnly = async (req, res) => {
       contents: [filePart, prompt],
     });
     const data = extractJsonObject(response.text);
+    const basics = calculateInvoiceBasics({
+      amount: data.total_amount,
+      tax: data.tax,
+      discount: data.discount,
+      shipping: data.shipping,
+      items: data.items,
+    });
 
     res.json({
       success: true,
-      data,
+      data: {
+        ...data,
+        total_amount: basics.amount,
+        subtotal: basics.subtotal,
+        tax: basics.tax,
+        discount: basics.discount,
+        shipping: basics.shipping,
+        item_count: basics.itemCount,
+        average_item_amount: basics.averageItemAmount,
+        tax_rate_percent: basics.taxRatePercent,
+        highest_item: basics.highestItem,
+        items: basics.items,
+      },
     });
   } catch (error) {
+    if (isAiQuotaError(error)) {
+      const fallbackData = buildAiUnavailableData(req.file);
+
+      return res.status(200).json({
+        success: true,
+        aiAvailable: false,
+        message: "AI quota limit reached. Automatic extraction is unavailable right now.",
+        data: fallbackData,
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: error.message,
@@ -373,5 +535,6 @@ module.exports = {
   getInvoices,
   getInvoiceById,
   deleteInvoice,
+  clearInvoiceHistory,
   extractInvoiceDataOnly,
 };
